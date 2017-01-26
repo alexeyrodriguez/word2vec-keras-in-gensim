@@ -97,7 +97,8 @@ def train_batch_sg(model, sentences, alpha=None, work=None,sub_batch_size=256,ba
                                     batch_count += 1
                                     sub_batch_count=0
                                 if batch_count >= batch_size :
-                                    yield { 'index':train_x0, 'point':train_x1, 'code':train_y}
+                                    # yield { 'index':train_x0, 'point':train_x1, 'code':train_y} --AR go back to a named interface
+                                    yield ([train_x0, train_x1], train_y)
                                     batch_count=0
 
         
