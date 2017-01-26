@@ -21,15 +21,11 @@ import random
 import numpy as np
 import copy
 
-import keras.constraints
-
-from keras.utils.np_utils import accuracy
-from keras.models import Graph,Sequential
-from keras.layers.core import Dense, Dropout, Activation, Merge, Flatten , Lambda
+from keras.models import Model
+from keras.layers import Input, Dense, Activation
 from keras.layers.embeddings import Embedding
-from keras.optimizers import SGD
-from keras.objectives import mse
-
+from keras.layers.core import Lambda, Merge, Reshape
+from keras import backend as K
 
 def queue_to_list(q,extract_size):
     """ Dump a Queue to a list """
@@ -113,17 +109,21 @@ def build_keras_model_sg(index_size,vector_size,
                          learn_vectors=True,learn_hidden=True,
                          model=None):
 
-    kerasmodel = Graph()
-    kerasmodel.add_input(name='point' , input_shape=(1,), dtype=int)
-    kerasmodel.add_input(name='index' , input_shape=(1,), dtype=int)
-    kerasmodel.add_node(Embedding(index_size, vector_size, input_length=sub_batch_size,weights=[model.syn0]),name='embedding', input='index')
-    kerasmodel.add_node(Embedding(context_size, vector_size, input_length=sub_batch_size,weights=[model.keras_syn1]),name='embedpoint', input='point')
-    kerasmodel.add_node(Lambda(lambda x:x.sum(2))   , name='merge',inputs=['embedding','embedpoint'], merge_mode='mul')
-    kerasmodel.add_node(Activation('sigmoid'), name='sigmoid', input='merge')
-    kerasmodel.add_output(name='code',input='sigmoid')
-    kerasmodel.compile('rmsprop', {'code':'mse'})
-    return kerasmodel
+    index = Input(shape=(sub_batch_size,), dtype='int32')
+    point = Input(shape=(sub_batch_size,), dtype='int32')
 
+    embedding = Embedding(index_size, vector_size, input_length=sub_batch_size, weights=[model.syn0])(index)
+    embedpoint = Embedding(context_size, vector_size, input_length=sub_batch_size, weights=[model.keras_syn1])(point)
+
+    dot = Merge(mode='mul')([embedpoint, embedding])
+    dot = Lambda(lambda x: K.sum(x, axis=2))(dot)
+
+    sigmoid = Activation('sigmoid')(dot)
+
+    model = Model(input=[point, index], output=sigmoid)
+    model.compile(optimizer='rmsprop', loss='mse')
+
+    return model
 
 
 def train_cbow_pair(model, word, input_word_indices, l=None, alpha=None, learn_vectors=True, learn_hidden=True):
@@ -360,7 +360,7 @@ class Word2VecKeras(gensim.models.word2vec.Word2Vec):
                                                      )
                 
             gen=train_batch_sg(self, sentences, sub_batch_size=sub_batch_size,batch_size=batch_size)
-            self.kerasmodel.nodes['embedding'].set_weights([self.syn0])
+            # self.kerasmodel.nodes['embedding'].set_weights([self.syn0]) --AR (is this really needed here?, the weights are already set)
             self.kerasmodel.fit_generator(gen,samples_per_epoch=samples_per_epoch, nb_epoch=self.iter, verbose=0)
         else:
             samples_per_epoch=int(sum(map(len,sentences)))
@@ -373,7 +373,8 @@ class Word2VecKeras(gensim.models.word2vec.Word2Vec):
                                                        )
             gen=train_batch_cbow(self, sentences, self.alpha, work=None,batch_size=batch_size)
             self.kerasmodel.fit_generator(gen,samples_per_epoch=samples_per_epoch, nb_epoch=self.iter,verbose=0)
-        self.syn0=self.kerasmodel.nodes['embedding'].get_weights()[0]
+        # self.syn0=self.kerasmodel.nodes['embedding'].get_weights()[0] -- AR: use names rather than indices
+        self.syn0 = self.kerasmodel.get_weights()[0]
         if self.negative>0 and self.hs :
             syn1tmp=self.kerasmodel.nodes['embedpoint'].get_weights()[0]
             self.syn1=syn1tmp[0:len(self.vocab)]
@@ -381,7 +382,8 @@ class Word2VecKeras(gensim.models.word2vec.Word2Vec):
         elif self.hs:
             self.syn1=self.kerasmodel.nodes['embedpoint'].get_weights()[0]
         else:
-            self.syn1neg=self.kerasmodel.nodes['embedpoint'].get_weights()[0]
+            # self.syn1neg=self.kerasmodel.nodes['embedpoint'].get_weights()[0] -- AR: use name interface!
+            self.syn1neg=self.kerasmodel.layers[1].get_weights()
 
 
 if __name__ == "__main__":
@@ -393,7 +395,7 @@ if __name__ == "__main__":
     
     v_iter=1
     v_size=5
-    sg_v=0
+    sg_v=1 # 0 -- Enable skipgram for testing --AR (make it work for CBOW too)
     topn=4
     # hs=1
     # negative=0
@@ -406,7 +408,8 @@ if __name__ == "__main__":
     vsk1 = Word2VecKeras(sents,hs=hs,negative=negative,sg=sg_v,size=v_size,iter=v_iter)
     print 'compare',vsk1.compare_w2v(vs1)
     vsk1.iter=20
-    vsk1.train(sents,batch_size=100,sub_batch_size=64)
+    # vsk1.train(sents,batch_size=100,sub_batch_size=64) --AR: why is the mini-batch 64 rather than 16?
+    vsk1.train(sents,batch_size=100,sub_batch_size=16)
     print 'compare',vsk1.compare_w2v(vs1)
     print vs1['the']
     print vsk1['the']
